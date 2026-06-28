@@ -50,8 +50,7 @@
         .header-scrolled{background:rgba(8,8,8,.85)!important;backdrop-filter:blur(20px)!important;border-bottom:1px solid rgba(42,42,46,.5)!important}
         .movie-card:hover .card-glow{opacity:1}
         .card-glow{opacity:0;transition:opacity .4s ease;position:absolute;inset:-2px;border-radius:14px;background:linear-gradient(135deg,rgba(230,57,70,.4),transparent 60%);z-index:-1;filter:blur(8px)}
-        .row-btn{transition:all .2s}
-        .row-btn:hover{background:#E63946;border-color:#E63946;color:#fff}
+        .row-btn{transition:all .2s}.row-btn:hover{background:#E63946;border-color:#E63946;color:#fff}
         .genre-tag{background:rgba(230,57,70,.15);border:1px solid rgba(230,57,70,.3);color:#E63946;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;white-space:nowrap;transition:all .2s}
         .genre-tag:hover{background:rgba(230,57,70,.3)}
         .star-filled{color:#F5C518}.star-empty{color:#3A3A3E}
@@ -63,12 +62,10 @@
         .cast-photo{transition:all .3s ease;border:2px solid transparent}
         .video-tab{transition:all .2s;border-bottom:2px solid transparent}
         .video-tab.active{color:#E63946;border-bottom-color:#E63946}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .spin{animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}.spin{animation:spin 1s linear infinite}
         .proxy-badge{font-size:10px;background:rgba(245,197,24,.15);border:1px solid rgba(245,197,24,.3);color:#F5C518;padding:2px 8px;border-radius:10px}
         .source-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:12px;font-size:13px;font-weight:600;transition:transform .15s;cursor:pointer;text-decoration:none}
         .source-pill:hover{transform:scale(1.05)}
-        .wtw-loading{display:flex;align-items:center;gap:8px;color:#7A7A7A;font-size:13px;padding:12px 0}
     </style>
 </head>
 <body class="bg-bg text-white font-body min-h-screen">
@@ -91,7 +88,7 @@
         </div>
         <div id="mobile-search" class="hidden px-4 pb-3 search-mobile">
             <div class="relative">
-                <input type="text" id="search-input-mobile" placeholder="Search movies..." class="w-full bg-surface/80 backdrop-blur-md border border-border rounded-full px-5 py-2.5 pl-11 text-sm text-white placeholder-muted focus:outline-none focus:border-accent/60 transition-colors" aria-label="Search movies mobile">
+                <input type="text" id="search-input-mobile" placeholder="Search movies..." class="w-full bg-surface/80 backdrop-blur-md border border-border rounded-full px-5 py-2.5 pl-11 text-sm text-white placeholder-muted focus:outline-none focus:border-accent/60 transition-colors" aria-label="Search mobile">
                 <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-muted text-sm"></i>
             </div>
         </div>
@@ -129,7 +126,7 @@
                 <div class="w-7 h-7 rounded-md bg-accent/80 flex items-center justify-center"><i class="fas fa-play text-white text-[10px] ml-0.5"></i></div>
                 <span class="font-display text-xl tracking-wider text-white/70">xStream</span>
             </div>
-            <p class="text-xs text-muted/50">Powered by Kinocheck + WatchMode APIs. Built for cinema lovers.</p>
+            <p class="text-xs text-muted/50">Powered by Kinocheck + WatchMode APIs.</p>
         </div>
     </footer>
 
@@ -174,14 +171,17 @@ var DOM={
     proxyIndicator:$('#proxy-indicator'),proxyLabel:$('#proxy-label')
 };
 
-/* ===== Shared CORS fetch ===== */
+/* ===== CORS-aware fetch — FIXED CHAIN LOGIC ===== */
+
 function isCorsError(err){
     if(!err)return false;
     var msg=(err.message||'').toLowerCase();
-    if(msg==='failed to fetch'||msg==='load failed'||msg.indexOf('networkerror')!==-1||msg.indexOf('cross-origin')!==-1||msg.indexOf('cors')!==-1||msg.indexOf('blocked')!==-1)return true;
+    if(msg==='failed to fetch'||msg==='load failed'||msg.indexOf('networkerror')!==-1||
+       msg.indexOf('cross-origin')!==-1||msg.indexOf('cors')!==-1||msg.indexOf('blocked')!==-1)return true;
     if(err instanceof TypeError&&(!err.message||err.message===''))return true;
     return false;
 }
+
 function getErrorMsg(err){
     if(!err)return'Unknown error';
     if(err.message&&err.message.length>0&&err.message!=='undefined')return err.message;
@@ -190,48 +190,77 @@ function getErrorMsg(err){
     try{return JSON.stringify(err)}catch(e){return'Unknown error'}
 }
 
-function corsGet(baseUrl,apiKey,path,headers){
-    if(state.activeProxy!==null){
-        return doFetch(baseUrl,apiKey,path,headers,state.activeProxy);
-    }
-    var lastErr=null;
-    var chain=Promise.reject(new Error('start'));
-    for(var i=0;i<PROXIES.length;i++){
-        (function(idx){
-            chain=chain.catch(function(err){
-                lastErr=err;
-                console.warn('[xStream] Proxy "'+PROXIES[idx].name+'" failed:',err.message||err);
-                if(isCorsError(err)&&idx<PROXIES.length-1){
-                    return doFetch(baseUrl,apiKey,path,headers,idx);
-                }
-                throw err;
-            });
-        })(i);
-    }
-    return chain.then(function(){
-        return doFetch(baseUrl,apiKey,path,headers,0).then(function(data){
-            console.log('[xStream] Direct connection succeeded.');
-            return data;
+// Build the final URL for a given proxy index
+function buildFetchUrl(targetUrl,proxyIdx){
+    var p=PROXIES[proxyIdx];
+    if(!p.prefix)return targetUrl;
+    return p.prefix+encodeURIComponent(targetUrl);
+}
+
+// Single fetch attempt against one proxy
+function doSingleFetch(targetUrl,extraHeaders,proxyIdx){
+    var fetchUrl=buildFetchUrl(targetUrl,proxyIdx);
+    var hdrs={};
+    if(extraHeaders){for(var k in extraHeaders)hdrs[k]=extraHeaders[k]}
+    console.log('[xStream] Trying '+PROXIES[proxyIdx].name+': '+fetchUrl.substring(0,120)+'...');
+    return fetch(fetchUrl,{method:'GET',headers:hdrs}).then(function(res){
+        console.log('[xStream] '+PROXIES[proxyIdx].name+' responded: '+res.status);
+        if(!res.ok){
+            return res.text().then(function(t){throw new Error('API '+res.status+': '+(t||res.statusText))});
+        }
+        return res.text().then(function(text){
+            try{return JSON.parse(text)}
+            catch(e){throw new Error('Invalid JSON response')}
         });
     });
 }
 
-function doFetch(baseUrl,apiKey,path,extraHeaders,proxyIdx){
-    var proxy=PROXIES[proxyIdx];
-    var targetUrl=baseUrl+path+(path.indexOf('?')!==-1?'&':'?')+'apiKey='+encodeURIComponent(apiKey);
-    var fetchUrl=proxy.prefix?proxy.prefix+encodeURIComponent(targetUrl):targetUrl;
-    var hdrs={};
-    if(extraHeaders)for(var k in extraHeaders)hdrs[k]=extraHeaders[k];
-    return fetch(fetchUrl,{method:'GET',headers:hdrs}).then(function(res){
-        if(!res.ok)return res.text().then(function(t){throw new Error('API '+res.status+': '+(t||res.statusText))});
-        return res.text().then(function(text){try{return JSON.parse(text)}catch(e){throw new Error('Invalid JSON response')}});
+// Try proxies sequentially — this is the CORRECT version
+function corsFetch(targetUrl,extraHeaders){
+    // If we already found a working proxy, use it directly
+    if(state.activeProxy!==null){
+        return doSingleFetch(targetUrl,extraHeaders,state.activeProxy);
+    }
+    // Otherwise try each proxy in order
+    return tryProxySequential(0,targetUrl,extraHeaders);
+}
+
+function tryProxySequential(idx,targetUrl,extraHeaders){
+    return doSingleFetch(targetUrl,extraHeaders,idx).then(function(data){
+        // Success — cache this proxy for future requests
+        if(idx>0){
+            state.activeProxy=idx;
+            showProxyBadge(PROXIES[idx].name);
+            console.log('[xStream] Cached proxy: '+PROXIES[idx].name);
+        }else{
+            console.log('[xStream] Direct connection succeeded.');
+        }
+        return data;
+    }).catch(function(err){
+        console.warn('[xStream] Proxy "'+PROXIES[idx].name+'" failed:',getErrorMsg(err));
+        // If it's a CORS/network error and we have more proxies, try next
+        if(isCorsError(err)&&idx<PROXIES.length-1){
+            return tryProxySequential(idx+1,targetUrl,extraHeaders);
+        }
+        // Otherwise this is a real API error or we're out of proxies
+        throw err;
     });
 }
 
-function kinoGet(path){return corsGet(KINO_URL,KINO_KEY,path,{'Content-Type':'application/json','Accept':'application/json','X-Api-Host':'api.kinocheck.com'})}
-function wmGet(path){return corsGet(WM_URL,WM_KEY,path.replace('?','?'),'')}
-
 function showProxyBadge(name){DOM.proxyIndicator.classList.remove('hidden');DOM.proxyLabel.textContent=name}
+
+// Convenience wrappers
+function kinoGet(path){
+    var url=KINO_URL+path;
+    return corsFetch(url,{'Content-Type':'application/json','Accept':'application/json','X-Api-Key':KINO_KEY,'X-Api-Host':'api.kinocheck.com'});
+}
+
+function wmGet(path){
+    var url=WM_URL+path;
+    if(url.indexOf('?')===-1)url+='?apiKey='+encodeURIComponent(WM_KEY);
+    else url+='&apiKey='+encodeURIComponent(WM_KEY);
+    return corsFetch(url,{});
+}
 
 /* ===== Kinocheck API ===== */
 function fetchMovies(){
@@ -251,14 +280,14 @@ function fetchMovies(){
 
 function fetchKinocheckDetail(id){
     var eps=['/movie?id='+id,'/movie/'+id,'/movie?tmdb_id='+id];
-    var chain=Promise.reject(new Error('start'));
+    var chain=Promise.reject(new Error('init'));
     for(var i=0;i<eps.length;i++){(function(ep){chain=chain.catch(function(){return kinoGet(ep)})})(eps[i])}
     return chain;
 }
 
 function fetchKinocheckTrailer(tmdbId){
-    var eps=['/movie?tmdb_id='+tmdbId,'/movie/'+ +tmdbId];
-    var chain=Promise.reject(new Error('start'));
+    var eps=['/movie?tmdb_id='+tmdbId];
+    var chain=Promise.reject(new Error('init'));
     for(var i=0;i<eps.length;i++){(function(ep){chain=chain.catch(function(){return kinoGet(ep).then(function(d){var v=normalizeVideos(d);if(v.length)state.movieVideos=v})})})(eps[i])}
     return chain.catch(function(){});
 }
@@ -274,15 +303,17 @@ function findAndFetchWM(tmdbId,imdbId,title,year){
         var results=data.title_results||[];
         if(!results.length)return;
         var wmId=results[0].id;
-        state.movieDetail.wmId=wmId;
-        if(!state.movieDetail.tmdbId&&results[0].tmdb_id)state.movieDetail.tmdbId=String(results[0].tmdb_id);
-        if(!state.movieDetail.imdbId&&results[0].imdb_id)state.movieDetail.imdbId=results[0].imdb_id;
+        if(state.movieDetail)state.movieDetail.wmId=wmId;
+        if(state.movieDetail&&!state.movieDetail.tmdbId&&results[0].tmdb_id)state.movieDetail.tmdbId=String(results[0].tmdb_id);
+        if(state.movieDetail&&!state.movieDetail.imdbId&&results[0].imdb_id)state.movieDetail.imdbId=results[0].imdb_id;
         return wmGet('/title/'+wmId+'/details/?append_to_response=sources,cast-crew').then(function(detail){
             state.watchSources=normalizeSources(detail.sources||[]);
             if(!state.movieCasts.length)state.movieCasts=normalizeWMCast(detail.cast_crew||[]);
-            if(!state.movieDetail.overview&&detail.plot_overview)state.movieDetail.overview=detail.plot_overview;
-            if(!state.movieDetail.runtime&&detail.runtime_minutes)state.movieDetail.runtime=detail.runtime_minutes;
-            if(!state.movieDetail.genres.length&&detail.genre_names)state.movieDetail.genres=detail.genre_names;
+            if(state.movieDetail){
+                if(!state.movieDetail.overview&&detail.plot_overview)state.movieDetail.overview=detail.plot_overview;
+                if(!state.movieDetail.runtime&&detail.runtime_minutes)state.movieDetail.runtime=detail.runtime_minutes;
+                if(!state.movieDetail.genres.length&&detail.genre_names)state.movieDetail.genres=detail.genre_names;
+            }
         });
     }).catch(function(){});
 }
@@ -363,10 +394,9 @@ function normalizeWMSearch(resp){
     return results.filter(function(r){return r.type==='movie'}).map(function(r){
         return{
             id:'',wmId:r.id||'',tmdbId:r.tmdb_id?String(r.tmdb_id):'',
-            title:r.name||'Untitled',
-            poster:resolveImg(r.poster_url),backdrop:resolveImg(r.backdrop_url),
-            overview:r.plot_overview||'',year:(r.year||'').toString(),
-            rating:parseFloat(r.user_rating||0)||0,
+            title:r.name||'Untitled',poster:resolveImg(r.poster_url),
+            backdrop:resolveImg(r.backdrop_url),overview:r.plot_overview||'',
+            year:(r.year||'').toString(),rating:parseFloat(r.user_rating||0)||0,
             genres:Array.isArray(r.genre_names)?r.genre_names:[],
             runtime:r.runtime_minutes||0,tagline:'',originalTitle:r.original_title||'',
             imdbId:r.imdb_id||'',releaseDate:r.year?r.year+'-01-01':''
@@ -378,10 +408,9 @@ function normalizeWMDetail(data){
     if(!data)return null;
     return{
         id:'',wmId:data.id||'',tmdbId:data.tmdb_id?String(data.tmdb_id):'',
-        title:data.title||'Untitled',
-        poster:resolveImg(data.poster_url),backdrop:resolveImg(data.backdrop_url),
-        overview:data.plot_overview||'',releaseDate:data.release_date||'',
-        rating:parseFloat(data.user_rating||0)||0,
+        title:data.title||'Untitled',poster:resolveImg(data.poster_url),
+        backdrop:resolveImg(data.backdrop_url),overview:data.plot_overview||'',
+        releaseDate:data.release_date||'',rating:parseFloat(data.user_rating||0)||0,
         genres:Array.isArray(data.genre_names)?data.genre_names:[],
         year:(data.year||'').toString(),runtime:data.runtime_minutes||0,
         tagline:'',originalTitle:data.original_title||'',imdbId:data.imdb_id||''
@@ -393,9 +422,9 @@ function normalizeVideos(d){
     var sources=[d.videos,d.trailers,d.video,d.youtube_trailers,d.trailer];
     for(var i=0;i<sources.length;i++){
         var src=sources[i];
-        if(Array.isArray(src)&&src.length>0)return src.map(function(v){return{key:v.key||v.youtube_key||v.youtube_id||v.video_key||'',name:v.name||v.title||'Trailer',type:v.type||v.category||'Trailer'}}).filter(function(v){return v.key});
+        if(Array.isArray(src)&&src.length>0)return src.map(function(v){return{key:v.key||v.youtube_key||v.youtube_id||v.video_key||'',name:v.name||v.title||'Trailer'}}).filter(function(v){return v.key});
         if(src&&typeof src==='object'&&(src.key||src.youtube_key||src.youtube_id||src.video_key)){
-            var item={key:src.key||src.youtube_key||src.youtube_id||src.video_key||'',name:src.name||src.title||'Trailer',type:src.type||src.category||'Trailer'};
+            var item={key:src.key||src.youtube_key||src.youtube_id||src.video_key||'',name:src.name||src.title||'Trailer'};
             return item.key?[item]:[];
         }
     }return[];
@@ -417,40 +446,28 @@ function normalizeWMCast(castCrew){
 
 function normalizeSources(sources){
     if(!Array.isArray(sources))return[];
-    return sources.map(function(s){return{sourceId:s.source_id,name:s.name||'Unknown',type:s.type||'sub',region:s.region||'US',format:s.formats||'',price:s.price||0,currency:s.currency||'USD',url:s.url||''}}).filter(function(s){return s.name!=='Unknown'});
+    return sources.map(function(s){return{sourceId:s.source_id,name:s.name||'Unknown',type:s.type||'sub',region:s.region||'US',price:s.price||0,currency:s.currency||'USD',url:s.url||''}}).filter(function(s){return s.name!=='Unknown'});
 }
 
-/* ===== Service brand colors ===== */
 function getServiceStyle(name){
     var n=name.toLowerCase();
     var map={
-        'netflix':{bg:'#E50914',fg:'#fff'},
-        'amazon prime':{bg:'#00A8E1',fg:'#fff'},
-        'amazon prime video':{bg:'#00A8E1',fg:'#fff'},
-        'disney+':{bg:'#113CCF',fg:'#fff'},
-        'hulu':{bg:'#1CE783',fg:'#000'},
-        'hbo max':{bg:'#B833FF',fg:'#fff'},
-        'max':{bg:'#B833FF',fg:'#fff'},
-        'apple tv+':{bg:'#1d1d1f',fg:'#fff',bd:'1px solid rgba(255,255,255,.2)'},
-        'paramount+':{bg:'#0064FF',fg:'#fff'},
-        'peacock':{bg:'#1d1d1f',fg:'#fff',bd:'1px solid rgba(255,255,255,.2)'},
-        'tubi':{bg:'#EE3124',fg:'#fff'},
-        'youtube':{bg:'#FF0000',fg:'#fff'},
-        'google play':{bg:'#4285F4',fg:'#fff'},
-        'vudu':{bg:'#2B74D1',fg:'#fff'},
-        'apple itunes':{bg:'#555',fg:'#fff'},
-        'mubi':{bg:'#0D191F',fg:'#fff',bd:'1px solid rgba(255,255,255,.2)'},
-        'crunchyroll':{bg:'#F47521',fg:'#fff'},
-        'showtime':{bg:'#81007F',fg:'#fff'},
-        'starz':{bg:'#1d1d1f',fg:'#fff',bd:'1px solid rgba(255,255,255,.2)'},
-        'fandor':{bg:'#FF6F00',fg:'#fff'},
-        'plex':{bg:'#E5A00D',fg:'#000'}
+        'netflix':{bg:'#E50914',fg:'#fff'},'amazon prime':{bg:'#00A8E1',fg:'#fff'},
+        'amazon prime video':{bg:'#00A8E1',fg:'#fff'},'disney+':{bg:'#113CCF',fg:'#fff'},
+        'hulu':{bg:'#1CE783',fg:'#000'},'hbo max':{bg:'#B833FF',fg:'#fff'},
+        'max':{bg:'#B833FF',fg:'#fff'},'apple tv+':{bg:'#1d1d1f',fg:'#fff'},
+        'paramount+':{bg:'#0064FF',fg:'#fff'},'peacock':{bg:'#1d1d1f',fg:'#fff'},
+        'tubi':{bg:'#EE3124',fg:'#fff'},'youtube':{bg:'#FF0000',fg:'#fff'},
+        'google play':{bg:'#4285F4',fg:'#fff'},'vudu':{bg:'#2B74D1',fg:'#fff'},
+        'apple itunes':{bg:'#555',fg:'#fff'},'mubi':{bg:'#0D191F',fg:'#fff'},
+        'crunchyroll':{bg:'#F47521',fg:'#fff'},'showtime':{bg:'#81007F',fg:'#fff'},
+        'starz':{bg:'#1d1d1f',fg:'#fff'},'plex':{bg:'#E5A00D',fg:'#000'}
     };
     for(var key in map){if(n.indexOf(key)!==-1)return map[key]}
     return{bg:'#2A2A2E',fg:'#fff'};
 }
 
-/* ===== RENDERING — ALL FUNCTIONS ===== */
+/* ===== RENDERING ===== */
 function renderEmptyHero(){
     DOM.heroBackdrop.classList.remove('hero-zoom');
     DOM.heroBackdrop.style.backgroundImage='none';
@@ -474,11 +491,9 @@ function renderHero(){
         DOM.heroBackdrop.style.backgroundImage='none';
         DOM.heroBackdrop.style.background='radial-gradient(ellipse at 25% 50%,rgba(230,57,70,.12) 0%,transparent 50%),#080808';
     }
-    var gH='';
-    if(m.genres.length>0){var gs=m.genres.slice(0,4);for(var i=0;i<gs.length;i++)gH+='<span class="genre-tag">'+escapeHtml(gs[i])+'</span>'}
+    var gH='';if(m.genres.length>0){var gs=m.genres.slice(0,4);for(var i=0;i<gs.length;i++)gH+='<span class="genre-tag">'+escapeHtml(gs[i])+'</span>'}
     var rH=m.rating>0?'<div class="flex items-center gap-1.5"><i class="fas fa-star text-gold text-sm"></i><span class="text-sm font-semibold">'+m.rating.toFixed(1)+'</span></div>':'';
-    var h='';
-    if(gH)h+='<div class="anim-fiu"><div class="flex flex-wrap gap-2 mb-4">'+gH+'</div></div>';
+    var h='';if(gH)h+='<div class="anim-fiu"><div class="flex flex-wrap gap-2 mb-4">'+gH+'</div></div>';
     h+='<h1 class="font-display text-5xl sm:text-6xl md:text-7xl tracking-wider leading-none mb-3 anim-fiu anim-fiu-d1 hero-title">'+escapeHtml(m.title)+'</h1>';
     h+='<div class="flex flex-wrap items-center gap-4 mb-5 anim-fiu anim-fiu-d2">';
     if(m.year)h+='<span class="text-sm text-white/60">'+m.year+'</span>';
@@ -488,18 +503,16 @@ function renderHero(){
     h+='<div class="flex flex-wrap gap-3 anim-fiu anim-fiu-d4">';
     h+='<button onclick="openDetail(\''+m.id+'\',\''+m.wmId+'\')" class="bg-accent hover:bg-accent/85 text-white font-semibold rounded-xl px-7 py-3 transition-all duration-200 active:scale-[0.97] flex items-center gap-2.5"><i class="fas fa-play text-sm"></i>Watch Trailer</button>';
     h+='<button onclick="openDetail(\''+m.id+'\',\''+m.wmId+'\')" class="bg-white/10 hover:bg-white/15 backdrop-blur-sm text-white font-semibold rounded-xl px-7 py-3 transition-all duration-200 border border-white/10 flex items-center gap-2.5"><i class="fas fa-info-circle text-sm"></i>More Info</button>';
-    h+='</div>';
-    DOM.heroContent.innerHTML=h;
+    h+='</div>';DOM.heroContent.innerHTML=h;
 }
 
 function renderErrorHero(err){
-    DOM.heroBackdrop.classList.remove('hero-zoom');
-    DOM.heroBackdrop.style.backgroundImage='none';
+    DOM.heroBackdrop.classList.remove('hero-zoom');DOM.heroBackdrop.style.backgroundImage='none';
     DOM.heroBackdrop.style.background='radial-gradient(ellipse at 30% 40%,rgba(230,57,70,.1) 0%,transparent 50%),#080808';
     var dm=getErrorMsg(err);var ic=isCorsError(err);
     var h='<div class="anim-fiu"><div class="flex items-center gap-3 mb-6"><div class="w-12 h-12 rounded-xl bg-accent/60 flex items-center justify-center"><i class="fas fa-play text-white text-lg ml-1"></i></div><span class="font-display text-5xl sm:text-6xl tracking-wider">xStream</span></div></div>'+
         '<div class="anim-fiu anim-fiu-d1 bg-accent/10 border border-accent/30 rounded-xl p-4 mb-6 max-w-lg"><div class="flex items-center gap-2 text-accent text-sm font-semibold mb-2"><i class="fas fa-exclamation-triangle"></i> Connection Error</div><p class="text-white/60 text-sm">'+escapeHtml(dm)+'</p></div>';
-    if(ic)h+='<div class="anim-fiu anim-fiu-d2 bg-surface border border-border rounded-xl p-5 max-w-lg mb-6"><h3 class="text-sm font-semibold mb-3 text-white/90">How to fix:</h3><ol class="text-sm text-muted space-y-2.5 list-decimal list-inside leading-relaxed"><li>App tried 3 CORS proxies but all failed</li><li>Tap Retry — proxy availability changes often</li><li>Or deploy to any HTTPS host (Netlify, Vercel)</li></ol></div>';
+    if(ic)h+='<div class="anim-fiu anim-fiu-d2 bg-surface border border-border rounded-xl p-5 max-w-lg mb-6"><h3 class="text-sm font-semibold mb-3 text-white/90">How to fix:</h3><ol class="text-sm text-muted space-y-2.5 list-decimal list-inside leading-relaxed"><li>All 3 CORS proxies failed — they can be unreliable</li><li>Tap Retry to try again (availability changes often)</li><li>Best fix: deploy to any HTTPS host (Netlify, Vercel, GitHub Pages)</li></ol></div>';
     h+='<button onclick="retryFetch()" class="anim-fiu anim-fiu-d3 bg-accent hover:bg-accent/85 text-white font-semibold rounded-xl px-7 py-3 transition-all duration-200 active:scale-[0.97] flex items-center gap-2.5"><i class="fas fa-redo text-sm"></i>Retry Connection</button>';
     DOM.heroContent.innerHTML=h;
 }
@@ -515,7 +528,7 @@ function renderMovieCard(m){
     var rB=m.rating>0?'<div class="absolute top-2 right-2 bg-black/60 backdrop-blur-sm rounded-lg px-2 py-0.5 flex items-center gap-1 z-10"><i class="fas fa-star text-gold text-[10px]"></i><span class="text-[11px] font-semibold">'+m.rating.toFixed(1)+'</span></div>':'';
     var src=m.poster||('https://placehold.co/340x510/1A1A1E/3A3A3E?text='+encodeURIComponent(m.title.substring(0,12)));
     var wmAttr=m.wmId?",'"+m.wmId:"";
-    return'<div class="movie-card flex-shrink-0 w-[160px] sm:w-[175px] cursor-pointer group" onclick="openDetail(\''+m.id+'\''+wmAttr+')" tabindex="0" role="button" aria-label="'+escapeHtml(m.title)+'"><div class="relative aspect-[2/3] rounded-xl overflow-hidden bg-card"><div class="card-glow"></div><img src="'+src+'" alt="'+escapeHtml(m.title)+'" class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" loading="lazy" onerror="this.src=\'https://placehold.co/340x510/1A1A1E/3A3A3E?text=No+Image\'"><div class="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center"><div class="w-14 h-14 rounded-full bg-accent/90 flex items-center justify-center transform scale-75 group-hover:scale-100 transition-transform duration-300 shadow-lg shadow-accent/30"><i class="fas fa-play text-white ml-1"></i></div></div>'+rB+'</div><div class="mt-2.5 px-0.5"><h3 class="text-sm font-semibold truncate group-hover:text-accent transition-colors">'+escapeHtml(m.title)+'</h3><p class="text-xs text-muted mt-0.5">'+(m.year||'N/A')+'</p></div></div>';
+    return'<div class="movie-card flex-shrink-0 w-[160px] sm:w-[175px] cursor-pointer group" onclick="openDetail(\''+m.id+'\''+wmAttr+')" tabindex="0" role="button"><div class="relative aspect-[2/3] rounded-xl overflow-hidden bg-card"><div class="card-glow"></div><img src="'+src+'" alt="'+escapeHtml(m.title)+'" class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" loading="lazy" onerror="this.src=\'https://placehold.co/340x510/1A1A1E/3A3A3E?text=No+Image\'"><div class="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center"><div class="w-14 h-14 rounded-full bg-accent/90 flex items-center justify-center transform scale-75 group-hover:scale-100 transition-transform duration-300 shadow-lg shadow-accent/30"><i class="fas fa-play text-white ml-1"></i></div></div>'+rB+'</div><div class="mt-2.5 px-0.5"><h3 class="text-sm font-semibold truncate group-hover:text-accent transition-colors">'+escapeHtml(m.title)+'</h3><p class="text-xs text-muted mt-0.5">'+(m.year||'N/A')+'</p></div></div>';
 }
 
 function renderMovieRows(){
@@ -525,7 +538,7 @@ function renderMovieRows(){
     var html='';
     for(var si=0;si<sections.length;si++){
         var s=sections[si];
-        html+='<section class="row-section" data-row="'+si+'"><div class="flex items-center justify-between mb-5"><h2 class="font-display text-2xl sm:text-3xl tracking-wider">'+escapeHtml(s.title)+'</h2><div class="flex gap-2"><button class="row-scroll-left row-btn w-9 h-9 rounded-full bg-surface border border-border flex items-center justify-center" data-row="'+si+'" aria-label="Scroll left"><i class="fas fa-chevron-left text-xs"></i></button><button class="row-scroll-right row-btn w-9 h-9 rounded-full bg-surface border border-border flex items-center justify-center" data-row="'+si+'" aria-label="Scroll right"><i class="fas fa-chevron-right text-xs"></i></button></div></div><div class="movie-row flex gap-4 overflow-x-auto scrollbar-hide pb-4 scroll-smooth">';
+        html+='<section class="row-section" data-row="'+si+'"><div class="flex items-center justify-between mb-5"><h2 class="font-display text-2xl sm:text-3xl tracking-wider">'+escapeHtml(s.title)+'</h2><div class="flex gap-2"><button class="row-scroll-left row-btn w-9 h-9 rounded-full bg-surface border border-border flex items-center justify-center" data-row="'+si+'"><i class="fas fa-chevron-left text-xs"></i></button><button class="row-scroll-right row-btn w-9 h-9 rounded-full bg-surface border border-border flex items-center justify-center" data-row="'+si+'"><i class="fas fa-chevron-right text-xs"></i></button></div></div><div class="movie-row flex gap-4 overflow-x-auto scrollbar-hide pb-4 scroll-smooth">';
         for(var mi=0;mi<s.movies.length;mi++)html+=renderMovieCard(s.movies[mi]);
         html+='</div></section>';
     }
@@ -552,13 +565,12 @@ function clearSearch(){
 }
 
 function renderDetailLoading(){
-    DOM.detailContent.innerHTML='<div class="flex justify-end mb-4"><button onclick="closeDetail()" class="w-10 h-10 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center hover:border-accent/50 transition-colors" aria-label="Close"><i class="fas fa-times"></i></button></div><div class="aspect-video rounded-2xl skeleton mb-8"></div><div class="h-10 w-3/4 skeleton rounded-lg mb-4"></div><div class="h-5 w-1/3 skeleton rounded mb-6"></div><div class="space-y-3"><div class="h-4 w-full skeleton rounded"></div><div class="h-4 w-5/6 skeleton rounded"></div><div class="h-4 w-2/3 skeleton rounded"></div></div>';
+    DOM.detailContent.innerHTML='<div class="flex justify-end mb-4"><button onclick="closeDetail()" class="w-10 h-10 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center hover:border-accent/50 transition-colors"><i class="fas fa-times"></i></button></div><div class="aspect-video rounded-2xl skeleton mb-8"></div><div class="h-10 w-3/4 skeleton rounded-lg mb-4"></div><div class="h-5 w-1/3 skeleton rounded mb-6"></div><div class="space-y-3"><div class="h-4 w-full skeleton rounded"></div><div class="h-4 w-5/6 skeleton rounded"></div><div class="h-4 w-2/3 skeleton rounded"></div></div>';
 }
 
 function renderStars(rating){
     var n=Math.min(rating/2,5);var h='';
-    for(var i=1;i<=5;i++){if(i<=Math.floor(n))h+='<i class="fas fa-star star-filled text-sm"></i>';else if(i-0.5<=n)h+='<i class="fas fa-star-half-alt star-filled text-sm"></i>';else h+='<i class="far fa-star star-empty text-sm"></i>'}
-    return h;
+    for(var i=1;i<=5;i++){if(i<=Math.floor(n))h+='<i class="fas fa-star star-filled text-sm"></i>';else if(i-0.5<=n)h+='<i class="fas fa-star-half-alt star-filled text-sm"></i>';else h+='<i class="far fa-star star-empty text-sm"></i>'}return h;
 }
 
 function renderWhereToWatch(){
@@ -574,12 +586,8 @@ function renderWhereToWatch(){
         for(var s=0;s<items.length;s++){
             var it=items[s];var st=getServiceStyle(it.name);
             var priceLbl='';if((type==='rent'||type==='buy')&&it.price>0)priceLbl=' $'+it.price.toFixed(2);
-            var bd=st.bd?';border:'+st.bd:'';
-            if(it.url){
-                html+='<a href="'+escapeHtml(it.url)+'" target="_blank" rel="noopener" class="source-pill" style="background:'+st.bg+';color:'+st.fg+bd+'">'+escapeHtml(it.name)+priceLbl+'</a>';
-            }else{
-                html+='<span class="source-pill" style="background:'+st.bg+';color:'+st.fg+bd+';cursor:default">'+escapeHtml(it.name)+priceLbl+'</span>';
-            }
+            if(it.url)html+='<a href="'+escapeHtml(it.url)+'" target="_blank" rel="noopener" class="source-pill" style="background:'+st.bg+';color:'+st.fg+'">'+escapeHtml(it.name)+priceLbl+'</a>';
+            else html+='<span class="source-pill" style="background:'+st.bg+';color:'+st.fg+';cursor:default">'+escapeHtml(it.name)+priceLbl+'</span>';
         }
         html+='</div></div>';
     }
@@ -593,22 +601,14 @@ function renderDetailModal(){
     var videoHTML='';
     if(ak){
         videoHTML='<div class="relative aspect-video rounded-2xl overflow-hidden bg-card mb-8 shadow-2xl shadow-black/50"><iframe src="https://www.youtube.com/embed/'+ak+'?autoplay=1&rel=0&modestbranding=1" class="w-full h-full" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen title="'+escapeHtml(vids[0].name)+'"></iframe></div>';
-        if(vids.length>1){
-            videoHTML+='<div class="flex gap-2 mb-8 overflow-x-auto scrollbar-hide pb-2">';
-            for(var vi=0;vi<vids.length;vi++){
-                var cls=vi===0?'active bg-accent/10 text-accent':'text-muted hover:text-white bg-card';
-                videoHTML+='<button onclick="switchVideo(\''+vids[vi].key+'\',this)" class="video-tab flex-shrink-0 px-4 py-2 text-sm rounded-lg '+cls+' transition-colors">'+escapeHtml(vids[vi].name)+'</button>';
-            }
-            videoHTML+='</div>';
-        }
+        if(vids.length>1){videoHTML+='<div class="flex gap-2 mb-8 overflow-x-auto scrollbar-hide pb-2">';for(var vi=0;vi<vids.length;vi++){var cls=vi===0?'active bg-accent/10 text-accent':'text-muted hover:text-white bg-card';videoHTML+='<button onclick="switchVideo(\''+vids[vi].key+'\',this)" class="video-tab flex-shrink-0 px-4 py-2 text-sm rounded-lg '+cls+' transition-colors">'+escapeHtml(vids[vi].name)+'</button>'}videoHTML+='</div>'}
     }else{
         var bgImg=m.backdrop?'<img src="'+m.backdrop+'" alt="" class="w-full h-full object-cover" onerror="this.style.display=\'none\'">':'';
         videoHTML='<div class="relative aspect-video rounded-2xl overflow-hidden bg-card mb-8">'+bgImg+'<div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div><div class="absolute inset-0 flex items-center justify-center"><p class="text-muted text-sm">No trailers available</p></div></div>';
     }
     var gH='';if(m.genres.length){gH='<div class="flex flex-wrap gap-2 mb-6">';for(var gi=0;gi<m.genres.length;gi++)gH+='<span class="genre-tag">'+escapeHtml(m.genres[gi])+'</span>';gH+='</div>'}
     var stars=renderStars(m.rating);
-    var metaLine='';
-    if(m.year)metaLine+='<span class="text-sm text-white/70">'+m.year+'</span>';
+    var metaLine='';if(m.year)metaLine+='<span class="text-sm text-white/70">'+m.year+'</span>';
     if(m.runtime)metaLine+='<span class="text-sm text-white/70"><i class="far fa-clock mr-1.5 text-xs"></i>'+m.runtime+' min</span>';
     if(m.rating>0)metaLine+='<div class="flex items-center gap-2">'+stars+'<span class="text-sm font-semibold">'+m.rating.toFixed(1)+'</span></div>';
     if(m.imdbId)metaLine+='<a href="https://www.imdb.com/title/'+m.imdbId+'" target="_blank" rel="noopener" class="text-sm text-gold hover:text-gold/80 transition-colors flex items-center gap-1.5"><i class="fab fa-imdb"></i>IMDb</a>';
@@ -617,32 +617,19 @@ function renderDetailModal(){
     var posterSrc=m.poster||('https://placehold.co/440x660/1A1A1E/3A3A3E?text='+encodeURIComponent(m.title.substring(0,10)));
     var wtwHTML=renderWhereToWatch();
     var castHTML='';
-    if(casts.length){
-        castHTML='<div class="mt-10"><h3 class="font-display text-2xl tracking-wider mb-5">Cast</h3><div class="flex gap-4 overflow-x-auto scrollbar-hide pb-4">';
-        var cs=casts.slice(0,20);
-        for(var ci=0;ci<cs.length;ci++){
-            var c=cs[ci];var cP=c.photo||('https://placehold.co/220x220/1A1A1E/3A3A3E?text='+encodeURIComponent(c.name.charAt(0)));
-            castHTML+='<div class="cast-card flex-shrink-0 w-[110px] text-center cursor-default"><div class="w-[110px] h-[110px] rounded-full overflow-hidden bg-card mb-2.5"><img src="'+cP+'" alt="'+escapeHtml(c.name)+'" class="cast-photo w-full h-full object-cover" loading="lazy" onerror="this.src=\'https://placehold.co/220x220/1A1A1E/3A3A3E?text='+encodeURIComponent(c.name.charAt(0))+'\'"></div><p class="text-xs font-semibold truncate">'+escapeHtml(c.name)+'</p>';
-            if(c.character)castHTML+='<p class="text-[10px] text-muted truncate mt-0.5">'+escapeHtml(c.character)+'</p>';
-            castHTML+='</div>';
-        }
-        castHTML+='</div></div>';
-    }
-    DOM.detailContent.innerHTML='<div class="anim-modal"><div class="flex justify-end mb-4"><button onclick="closeDetail()" class="w-10 h-10 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center hover:border-accent/50 transition-colors" aria-label="Close"><i class="fas fa-times"></i></button></div>'+videoHTML+'<div class="flex flex-col lg:flex-row gap-8"><div class="flex-shrink-0 lg:w-[220px]"><div class="aspect-[2/3] rounded-xl overflow-hidden bg-card shadow-xl shadow-black/40 mx-auto lg:mx-0 max-w-[220px]"><img src="'+posterSrc+'" alt="'+escapeHtml(m.title)+'" class="w-full h-full object-cover" onerror="this.src=\'https://placehold.co/440x660/1A1A1E/3A3A3E?text=No+Image\'"></div></div><div class="flex-1 min-w-0">'+taglineH+'<h1 class="font-display text-4xl sm:text-5xl tracking-wider leading-tight mb-3">'+escapeHtml(m.title)+'</h1>'+origTitleH+'<div class="flex flex-wrap items-center gap-4 mb-5">'+metaLine+'</div>'+gH+'<h3 class="font-semibold text-sm uppercase tracking-wider text-muted mb-2">Overview</h3><p class="text-sm sm:text-base text-white/70 leading-relaxed">'+escapeHtml(m.overview||'No description available.')+'</p></div></div>'+wtwHTML+castHTML+'</div>';
+    if(casts.length){castHTML='<div class="mt-10"><h3 class="font-display text-2xl tracking-wider mb-5">Cast</h3><div class="flex gap-4 overflow-x-auto scrollbar-hide pb-4">';var cs=casts.slice(0,20);for(var ci=0;ci<cs.length;ci++){var c=cs[ci];var cP=c.photo||('https://placehold.co/220x220/1A1A1E/3A3A3E?text='+encodeURIComponent(c.name.charAt(0)));castHTML+='<div class="cast-card flex-shrink-0 w-[110px] text-center cursor-default"><div class="w-[110px] h-[110px] rounded-full overflow-hidden bg-card mb-2.5"><img src="'+cP+'" alt="'+escapeHtml(c.name)+'" class="cast-photo w-full h-full object-cover" loading="lazy" onerror="this.src=\'https://placehold.co/220x220/1A1A1E/3A3A3E?text='+encodeURIComponent(c.name.charAt(0))+'\'"></div><p class="text-xs font-semibold truncate">'+escapeHtml(c.name)+'</p>';if(c.character)castHTML+='<p class="text-[10px] text-muted truncate mt-0.5">'+escapeHtml(c.character)+'</p>';castHTML+='</div>'}castHTML+='</div></div>'}
+    DOM.detailContent.innerHTML='<div class="anim-modal"><div class="flex justify-end mb-4"><button onclick="closeDetail()" class="w-10 h-10 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center hover:border-accent/50 transition-colors"><i class="fas fa-times"></i></button></div>'+videoHTML+'<div class="flex flex-col lg:flex-row gap-8"><div class="flex-shrink-0 lg:w-[220px]"><div class="aspect-[2/3] rounded-xl overflow-hidden bg-card shadow-xl shadow-black/40 mx-auto lg:mx-0 max-w-[220px]"><img src="'+posterSrc+'" alt="'+escapeHtml(m.title)+'" class="w-full h-full object-cover" onerror="this.src=\'https://placehold.co/440x660/1A1A1E/3A3A3E?text=No+Image\'"></div></div><div class="flex-1 min-w-0">'+taglineH+'<h1 class="font-display text-4xl sm:text-5xl tracking-wider leading-tight mb-3">'+escapeHtml(m.title)+'</h1>'+origTitleH+'<div class="flex flex-wrap items-center gap-4 mb-5">'+metaLine+'</div>'+gH+'<h3 class="font-semibold text-sm uppercase tracking-wider text-muted mb-2">Overview</h3><p class="text-sm sm:text-base text-white/70 leading-relaxed">'+escapeHtml(m.overview||'No description available.')+'</p></div></div>'+wtwHTML+castHTML+'</div>';
 }
 
 /* ===== Actions ===== */
 function openDetail(id,wmId){
     state.detailOpen=true;state.selectedMovie=id||'';
     state.watchSources=[];state.movieVideos=[];state.movieCasts=[];
-    DOM.detailModal.classList.remove('hidden');
-    document.body.style.overflow='hidden';
+    DOM.detailModal.classList.remove('hidden');document.body.style.overflow='hidden';
     state.isDetailLoading=true;renderDetailLoading();
-
     var mainPromise;
-    if(wmId){
-        mainPromise=fetchWMDetail(wmId);
-    }else if(id){
+    if(wmId){mainPromise=fetchWMDetail(wmId)}
+    else if(id){
         mainPromise=fetchKinocheckDetail(id).then(function(data){
             if(data){state.movieDetail=normalizeMovie(data);state.movieVideos=normalizeVideos(data);state.movieCasts=normalizeCasts(data)}
             var tmdbId=data?(data.tmdb_id||''):'';
@@ -650,14 +637,11 @@ function openDetail(id,wmId){
             var title=state.movieDetail?state.movieDetail.title:'';
             var year=state.movieDetail?state.movieDetail.year:'';
             return findAndFetchWM(tmdbId,imdbId,title,year).catch(function(){});
-        }).catch(function(err){console.warn('[xStream] Kinocheck detail failed:',err)});
-    }else{
-        closeDetail();return;
-    }
-
+        }).catch(function(err){console.warn('[xStream] Kino detail failed:',err)});
+    }else{closeDetail();return}
     mainPromise.then(function(){
         if(state.movieDetail)renderDetailModal();
-        else{showToast('Could not load movie details.','error');closeDetail()}
+        else{showToast('Could not load details.','error');closeDetail()}
     }).catch(function(err){
         console.error('[xStream] Detail error:',err);
         if(state.movieDetail)renderDetailModal();
@@ -666,16 +650,13 @@ function openDetail(id,wmId){
 }
 
 function closeDetail(){
-    state.detailOpen=false;state.selectedMovie=null;
-    state.movieDetail=null;state.movieVideos=[];state.movieCasts=[];
-    state.watchSources=[];state.activeVideoKey=null;
-    DOM.detailModal.classList.add('hidden');
-    document.body.style.overflow='';DOM.detailContent.innerHTML='';
+    state.detailOpen=false;state.selectedMovie=null;state.movieDetail=null;
+    state.movieVideos=[];state.movieCasts=[];state.watchSources=[];state.activeVideoKey=null;
+    DOM.detailModal.classList.add('hidden');document.body.style.overflow='';DOM.detailContent.innerHTML='';
 }
 
 function switchVideo(key,btn){
-    state.activeVideoKey=key;
-    var tabs=$$('.video-tab');
+    state.activeVideoKey=key;var tabs=$$('.video-tab');
     for(var i=0;i<tabs.length;i++){tabs[i].classList.remove('active','bg-accent/10','text-accent');tabs[i].classList.add('text-muted','bg-card')}
     if(btn){btn.classList.add('active','bg-accent/10','text-accent');btn.classList.remove('text-muted','bg-card')}
     var iframe=DOM.detailContent.querySelector('iframe');
@@ -725,9 +706,7 @@ function searchMovies(query){
     state.searchQuery=query;
     DOM.searchResults.classList.remove('hidden');DOM.rowsContainer.classList.add('hidden');DOM.hero.classList.add('hidden');
     DOM.searchResults.innerHTML='<div class="flex items-center gap-3 mb-6"><h2 class="font-display text-2xl tracking-wider">Results for "'+escapeHtml(query)+'"</h2><div class="w-5 h-5 border-2 border-accent border-t-transparent rounded-full spin"></div></div><div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">'+Array(12).fill('<div class="aspect-[2/3] rounded-xl skeleton"></div>').join('')+'</div>';
-    combinedSearch(query).then(function(movies){state.searchResults=movies;renderSearchResults(query)}).catch(function(err){
-        DOM.searchResults.innerHTML='<div class="text-center py-20"><i class="fas fa-search text-4xl text-muted/30 mb-4"></i><p class="text-muted">Search failed: '+escapeHtml(getErrorMsg(err))+'</p></div>';
-    });
+    combinedSearch(query).then(function(movies){state.searchResults=movies;renderSearchResults(query)}).catch(function(err){DOM.searchResults.innerHTML='<div class="text-center py-20"><i class="fas fa-search text-4xl text-muted/30 mb-4"></i><p class="text-muted">Search failed: '+escapeHtml(getErrorMsg(err))+'</p></div>'});
 }
 
 /* ===== Init ===== */
